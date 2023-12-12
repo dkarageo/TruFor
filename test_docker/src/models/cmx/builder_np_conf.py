@@ -172,4 +172,23 @@ class myEncoderDecoder(nn.Module):
 
         out, conf, det = self.encode_decode(rgb, modal_x)
         return out, conf, det, modal_x
-            
+
+
+class NoiseprintPlusPlus(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        from models.DnCNN import make_net
+        num_levels = 17
+        out_channel = 1
+        self.dncnn = make_net(3, kernels=[3, ] * num_levels,
+                              features=[64, ] * (num_levels - 1) + [out_channel],
+                              bns=[False, ] + [True, ] * (num_levels - 2) + [False, ],
+                              acts=['relu', ] * (num_levels - 1) + ['linear', ],
+                              dilats=[1, ] * num_levels,
+                              bn_momentum=0.1, padding=1)
+
+    def forward(self, rgb):
+        modal_x = self.dncnn(rgb)
+        modal_x = torch.tile(modal_x, (3, 1, 1))
+        return modal_x
