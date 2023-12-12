@@ -13,15 +13,20 @@
 Created in September 2022
 @author: fabrizio.guillaro
 """
-
+import csv
+import pathlib
 import sys, os
 import argparse
+import timeit
+from typing import Union, Any
+
 import numpy as np
 from tqdm import tqdm
 from glob import glob
 
 import torch
 from torch.nn import functional as F
+from PIL import Image
 
 path = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..')
 if path not in sys.path:
@@ -31,12 +36,23 @@ from config import update_config
 from config import _C as config
 from data_core import myDataset
 
+
+def write_csv_file(data, output_file) -> None:
+    with output_file.open("w") as f:
+        writer: csv.DictWriter = csv.DictWriter(f, fieldnames=data[0].keys(), delimiter=",")
+        writer.writeheader()
+        for r in data:
+            writer.writerow(r)
+
+
 parser = argparse.ArgumentParser(description='Test TruFor')
 parser.add_argument('-gpu', '--gpu', type=int, default=0, help='device, use -1 for cpu')
 parser.add_argument('-in', '--input', type=str, default='../images',
                     help='can be a single file, a directory or a glob statement')
 parser.add_argument('-out', '--output', type=str, default='../output', help='output folder')
 parser.add_argument('-save_np', '--save_np', action='store_true', help='whether to save the Noiseprint++ or not')
+parser.add_argument('-export_results', '--export_results', action='store_true',
+                    help='Flag that when provided exports the results instead of the npz file.')
 parser.add_argument('opts', help="other options", default=None, nargs=argparse.REMAINDER)
 
 args = parser.parse_args()
@@ -46,6 +62,7 @@ input = args.input
 output = args.output
 gpu = args.gpu
 save_np = args.save_np
+export_results: bool = args.export_results
 
 device = 'cuda:%d' % gpu if gpu >= 0 else 'cpu'
 np.set_printoptions(formatter={'float': '{: 7.3f}'.format})
@@ -91,6 +108,11 @@ else:
 
 model.load_state_dict(checkpoint['state_dict'])
 model = model.to(device)
+
+detection_results = []
+
+torch.cuda.synchronize()
+start_time: float = timeit.default_timer()
 
 with torch.no_grad():
     for index, (rgb, path) in enumerate(tqdm(testloader)):
@@ -153,13 +175,30 @@ with torch.no_grad():
                 if save_np:
                     out_dict['np++'] = npp
 
-                from os import makedirs
-
-                makedirs(os.path.dirname(filename_out), exist_ok=True)
-                np.savez(filename_out, **out_dict)
+                if export_results:  # Export the localization mask as a PNG and the score in a CSV.
+                    loc_map_path: pathlib.Path = (
+                        pathlib.Path(output) / f"{pathlib.Path(path).stem}.png"
+                    )
+                    Image.fromarray((pred*255).astype(np.uint8)).save(loc_map_path)
+                    detection_results.append({
+                        "image": pathlib.Path(path).name,
+                        "trufor_detection": det_sig
+                    })
+                else:  # Export results in NPZ file.
+                    from os import makedirs
+                    makedirs(os.path.dirname(filename_out), exist_ok=True)
+                    np.savez(filename_out, **out_dict)
             except:
                 import traceback
 
                 traceback.print_exc()
                 pass
 
+torch.cuda.synchronize()
+stop_time: float = timeit.default_timer()
+elapsed_time: float = stop_time - start_time
+print(f"Total time: {elapsed_time} secs")
+print(f"Time per image: {elapsed_time/len(test_dataset)}")
+
+if export_results:
+    write_csv_file(detection_results, pathlib.Path(output) / "detection_results.csv")
